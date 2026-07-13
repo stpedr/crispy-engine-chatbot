@@ -26,11 +26,17 @@ export const pwaIcon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512
   <path d="m338 256 16 16 31-34" fill="none" stroke="#ffffff" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>`;
 
-export const serviceWorker = String.raw`const CACHE_NAME = "sales-bot-pwa-v1";
+export const serviceWorker = String.raw`const CACHE_NAME = "sales-bot-pwa-v3";
 const APP_SHELL = ["./", "./manifest.webmanifest", "./icon.svg"];
+const CHAT_PATHS = ["./chat", "./chat.html"];
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)));
+  event.waitUntil(
+    caches.open(CACHE_NAME).then(async (cache) => {
+      await cache.addAll(APP_SHELL);
+      await Promise.allSettled(CHAT_PATHS.map((path) => cache.add(path)));
+    })
+  );
   self.skipWaiting();
 });
 

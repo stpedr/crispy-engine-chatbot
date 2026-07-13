@@ -1,5 +1,5 @@
 import { collectDefaultMetrics, Counter, Gauge, Histogram, Registry } from "prom-client";
-import type { BotMetrics, EventMetrics, HandoffMetrics, ModelMetrics } from "../../domain/ports";
+import type { AcquisitionMetrics, BotMetrics, EventMetrics, HandoffMetrics, ModelMetrics } from "../../domain/ports";
 import type { Channel } from "../../domain/types";
 
 export interface MetricsConfig {
@@ -7,7 +7,7 @@ export interface MetricsConfig {
   enabled: boolean;
 }
 
-export interface AppMetrics extends BotMetrics, EventMetrics, HandoffMetrics, ModelMetrics {
+export interface AppMetrics extends BotMetrics, EventMetrics, HandoffMetrics, ModelMetrics, AcquisitionMetrics {
   contentType: string;
   metrics(): Promise<string>;
   recordHttpRequest(input: {
@@ -83,6 +83,13 @@ export function createMetrics(config: MetricsConfig): AppMetrics {
     registers: [registry]
   });
 
+  const workspaceActivations = new Counter({
+    name: "workspace_activations_total",
+    help: "Total completed sales workspace onboarding flows.",
+    labelNames: ["tone"],
+    registers: [registry]
+  });
+
   return {
     contentType: registry.contentType,
     async metrics() {
@@ -118,6 +125,10 @@ export function createMetrics(config: MetricsConfig): AppMetrics {
     recordModelGuardrailBlock(input) {
       if (!config.enabled) return;
       modelGuardrailBlocks.labels(input.reason).inc();
+    },
+    recordWorkspaceActivation(input) {
+      if (!config.enabled) return;
+      workspaceActivations.labels(input.tone).inc();
     }
   };
 }

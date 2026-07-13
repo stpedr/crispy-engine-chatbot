@@ -1,11 +1,12 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { ConversationRepository, LeadRepository } from "../../domain/ports";
-import type { Conversation, Lead } from "../../domain/types";
+import type { ConversationRepository, LeadRepository, SalesWorkspaceRepository } from "../../domain/ports";
+import type { Conversation, Lead, SalesWorkspace } from "../../domain/types";
 
 interface StoreState {
   conversations: Record<string, Conversation>;
   leads: Record<string, Lead>;
+  workspace?: SalesWorkspace;
 }
 
 const emptyState = (): StoreState => ({ conversations: {}, leads: {} });
@@ -42,7 +43,8 @@ export class JsonFileStore {
       const parsed = JSON.parse(await readFile(this.filePath, "utf8")) as Partial<StoreState>;
       this.state = {
         conversations: parsed.conversations ?? {},
-        leads: parsed.leads ?? {}
+        leads: parsed.leads ?? {},
+        workspace: parsed.workspace
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -50,6 +52,20 @@ export class JsonFileStore {
     }
 
     return this.state;
+  }
+}
+
+export class JsonSalesWorkspaceRepository implements SalesWorkspaceRepository {
+  constructor(private readonly store: JsonFileStore) {}
+
+  find(): Promise<SalesWorkspace | undefined> {
+    return this.store.read((state) => state.workspace);
+  }
+
+  save(workspace: SalesWorkspace): Promise<void> {
+    return this.store.update((state) => {
+      state.workspace = structuredClone(workspace);
+    });
   }
 }
 

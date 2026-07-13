@@ -26,6 +26,27 @@ export interface Product {
   description: string;
   priceCents: number;
   tags: string[];
+  imageUrl?: string;
+}
+
+export type SalesTone = "consultative" | "direct" | "friendly";
+
+export interface SalesWorkspace {
+  id: string;
+  businessName: string;
+  segment: string;
+  targetAudience: string;
+  valueProposition: string;
+  brandColor: string;
+  salesEmail?: string;
+  whatsapp?: string;
+  tone: SalesTone;
+  greeting: string;
+  handoffMessage: string;
+  products: Product[];
+  status: "active";
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ConversationMessage {
@@ -93,6 +114,7 @@ export interface BotReply {
   score: number;
   recommendedProducts: Product[];
   handoff: boolean;
+  profile: CustomerProfile;
   traceId?: string;
 }
 

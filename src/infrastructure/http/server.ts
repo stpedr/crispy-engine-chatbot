@@ -14,9 +14,10 @@ import type {
   IdempotencyStore,
   LeadRepository,
   ProductCatalog,
-  SalesCopyGenerator
+  SalesCopyGenerator,
+  SalesWorkspaceRepository
 } from "../../domain/ports";
-import { InMemoryProductCatalog } from "../catalog/InMemoryCatalog";
+import { WorkspaceProductCatalog } from "../catalog/WorkspaceProductCatalog";
 import { FallbackSalesCopyGenerator, HttpSalesCopyGenerator } from "../copy/HttpSalesCopyGenerator";
 import { OllamaSalesCopyGenerator } from "../copy/OllamaSalesCopyGenerator";
 import { SalesTopicGuardGenerator } from "../copy/SalesTopicGuardGenerator";
@@ -28,8 +29,10 @@ import { createLogger } from "../logging/logger";
 import { createMetrics, type AppMetrics } from "../observability/metrics";
 import { InMemoryConversationRepository } from "../persistence/InMemoryConversationRepository";
 import { InMemoryLeadRepository } from "../persistence/InMemoryLeadRepository";
+import { InMemorySalesWorkspaceRepository } from "../persistence/InMemorySalesWorkspaceRepository";
 import { chatPage } from "./chatPage";
 import { pwaIcon, pwaManifest, serviceWorker } from "./pwaAssets";
+import { setupPage } from "./setupPage";
 
 export interface ServerDependencies {
   config: AppConfig;
@@ -38,6 +41,7 @@ export interface ServerDependencies {
   conversations?: ConversationRepository;
   leads?: LeadRepository;
   catalog?: ProductCatalog;
+  workspace?: SalesWorkspaceRepository;
   events?: EventBus;
   crm?: CrmGateway;
   copyGenerator?: SalesCopyGenerator;
@@ -78,6 +82,34 @@ const leadListQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(200).default(50)
 });
 
+const workspaceProductSchema = z.object({
+  id: z.string().min(1).max(80).optional(),
+  name: z.string().trim().min(2).max(100),
+  description: z.string().trim().min(10).max(700),
+  priceCents: z.number().int().positive().max(1_000_000_000),
+  tags: z.array(z.string().trim().min(2).max(40)).min(1).max(12),
+  imageUrl: z.string().url().max(500).refine((value) => /^https?:\/\//i.test(value), {
+    message: "A imagem deve usar HTTP ou HTTPS."
+  }).optional()
+}).strict();
+
+const salesWorkspaceSchema = z.object({
+  businessName: z.string().trim().min(2).max(100),
+  segment: z.string().trim().min(2).max(100),
+  targetAudience: z.string().trim().min(10).max(500),
+  valueProposition: z.string().trim().min(10).max(500),
+  brandColor: z.string().regex(/^#[0-9a-f]{6}$/i),
+  salesEmail: z.string().email().max(160).optional(),
+  whatsapp: z.string().regex(/^\+?[0-9 ()-]{8,24}$/).optional(),
+  tone: z.enum(["consultative", "direct", "friendly"]),
+  greeting: z.string().trim().min(10).max(300),
+  handoffMessage: z.string().trim().min(10).max(300),
+  products: z.array(workspaceProductSchema).min(1).max(20)
+}).strict().refine((value) => value.salesEmail || value.whatsapp, {
+  message: "Informe um email comercial ou WhatsApp.",
+  path: ["salesEmail"]
+});
+
 export async function buildServer(deps: ServerDependencies): Promise<FastifyInstance> {
   const logger =
     deps.logger ??
@@ -94,7 +126,8 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
     });
   const conversations = deps.conversations ?? new InMemoryConversationRepository();
   const leads = deps.leads ?? new InMemoryLeadRepository();
-  const catalog = deps.catalog ?? new InMemoryProductCatalog();
+  const workspace = deps.workspace ?? new InMemorySalesWorkspaceRepository();
+  const catalog = deps.catalog ?? new WorkspaceProductCatalog(workspace);
   const events = deps.events ?? new InMemoryEventBus(logger.child({ component: "event-bus" }), metrics);
   const crm = deps.crm ?? (deps.config.crmWebhookUrl
     ? new HttpCrmGateway({
@@ -164,6 +197,7 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
     catalog,
     events,
     copyGenerator,
+    workspace,
     logger: logger.child({ component: "sales-bot" }),
     metrics
   });
@@ -248,7 +282,9 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
     fallback: "template",
     guardrails: ["system_prompt", "structured_output", "local_validation", "deterministic_business_rules"]
   }));
-  app.get("/", async (_request, reply) => reply.type("text/html; charset=utf-8").send(chatPage));
+  app.get("/", async (_request, reply) => reply.type("text/html; charset=utf-8").send(setupPage));
+  app.get("/setup", async (_request, reply) => reply.type("text/html; charset=utf-8").send(setupPage));
+  app.get("/chat", async (_request, reply) => reply.type("text/html; charset=utf-8").send(chatPage));
   app.get("/manifest.webmanifest", async (_request, reply) =>
     reply.type("application/manifest+json").send(pwaManifest)
   );
@@ -263,6 +299,38 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
   });
 
   app.get("/products", async () => ({ products: await catalog.list() }));
+
+  app.get("/workspace", async () => ({ workspace: await workspace.find() ?? null }));
+
+  app.put("/workspace", async (request, reply) => {
+    const parsed = salesWorkspaceSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: "invalid_request", details: parsed.error.flatten() });
+    }
+
+    const existing = await workspace.find();
+    const now = new Date().toISOString();
+    const usedProductIds = new Set<string>();
+    const configured = {
+      ...parsed.data,
+      id: existing?.id ?? crypto.randomUUID(),
+      products: parsed.data.products.map((product, index) => ({
+        ...product,
+        id: uniqueProductId(product.id ?? product.name, index, usedProductIds)
+      })),
+      status: "active" as const,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now
+    };
+
+    await workspace.save(configured);
+    metrics.recordWorkspaceActivation({ tone: configured.tone });
+    logger.info(
+      { workspaceId: configured.id, productCount: configured.products.length, tone: configured.tone },
+      "sales workspace activated"
+    );
+    return { workspace: configured };
+  });
 
   app.get("/leads", async (request, reply) => {
     const parsed = leadListQuerySchema.safeParse(request.query);
@@ -368,4 +436,19 @@ function serializeError(error: unknown) {
     name: "UnknownError",
     message: String(error)
   };
+}
+
+function uniqueProductId(value: string, index: number, used: Set<string>): string {
+  const base = value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 60) || `produto-${index + 1}`;
+  let candidate = base;
+  let suffix = 2;
+  while (used.has(candidate)) candidate = `${base}-${suffix++}`;
+  used.add(candidate);
+  return candidate;
 }

@@ -47,7 +47,7 @@ describe("HTTP API", () => {
     });
   });
 
-  it("serves the sales chat at the root route", async () => {
+  it("serves onboarding at the root route and the sales chat separately", async () => {
     app = await buildServer({
       config: loadConfig({
         NODE_ENV: "test",
@@ -61,11 +61,14 @@ describe("HTTP API", () => {
     });
 
     const response = await app.inject({ method: "GET", url: "/" });
+    const chat = await app.inject({ method: "GET", url: "/chat" });
 
     expect(response.statusCode).toBe(200);
     expect(response.headers["content-type"]).toContain("text/html");
-    expect(response.body).toContain("Sales Bot");
-    expect(response.body).toContain('id="composer"');
+    expect(response.body).toContain("Configurar Sales Bot");
+    expect(response.body).toContain('id="setup-form"');
+    expect(chat.statusCode).toBe(200);
+    expect(chat.body).toContain('id="composer"');
   });
 
   it("exposes prometheus metrics", async () => {
@@ -113,6 +116,54 @@ describe("HTTP API", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json().products).toHaveLength(3);
     expect(response.json().products[0]).toMatchObject({ id: "starter" });
+  });
+
+  it("activates a sales workspace and replaces the product menu", async () => {
+    app = await buildServer({
+      config: loadConfig({
+        NODE_ENV: "test",
+        SERVICE_NAME: "sales-bot-test",
+        LOG_LEVEL: "silent",
+        LOG_PRETTY: "false",
+        METRICS_ENABLED: "true",
+        PORT: "3000"
+      }),
+      logger: nullLogger
+    });
+
+    const activation = await app.inject({
+      method: "PUT",
+      url: "/workspace",
+      payload: {
+        businessName: "Vitta Clinica",
+        segment: "Saude e bem-estar",
+        targetAudience: "Adultos que procuram acompanhamento preventivo",
+        valueProposition: "Cuidado continuo com atendimento personalizado",
+        brandColor: "#1769aa",
+        salesEmail: "vendas@vitta.example",
+        tone: "consultative",
+        greeting: "Ola! Posso ajudar voce a encontrar o melhor acompanhamento?",
+        handoffMessage: "Perfeito. Vou encaminhar seu contexto para nossa equipe comercial.",
+        products: [{
+          name: "Plano Essencial",
+          description: "Acompanhamento mensal com orientacao preventiva.",
+          priceCents: 29900,
+          tags: ["saude", "mensal"]
+        }]
+      }
+    });
+    const workspace = await app.inject({ method: "GET", url: "/workspace" });
+    const products = await app.inject({ method: "GET", url: "/products" });
+
+    expect(activation.statusCode).toBe(200);
+    expect(activation.json().workspace).toMatchObject({ businessName: "Vitta Clinica", status: "active" });
+    expect(workspace.json().workspace.products).toHaveLength(1);
+    expect(products.json().products).toEqual([
+      expect.objectContaining({ id: "plano-essencial", name: "Plano Essencial", priceCents: 29900 })
+    ]);
+
+    const observedMetrics = await app.inject({ method: "GET", url: "/metrics" });
+    expect(observedMetrics.body).toContain("workspace_activations_total");
   });
 
   it("rejects invalid payloads", async () => {

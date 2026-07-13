@@ -8,7 +8,8 @@ import type {
   EventPublisher,
   LeadRepository,
   ProductCatalog,
-  SalesCopyGenerator
+  SalesCopyGenerator,
+  SalesWorkspaceRepository
 } from "../domain/ports";
 import type { BotInput, BotReply, Conversation, CustomerProfile, Lead, Timeline } from "../domain/types";
 
@@ -18,6 +19,7 @@ export interface SalesBotDependencies {
   catalog: ProductCatalog;
   events: EventPublisher;
   copyGenerator: SalesCopyGenerator;
+  workspace: SalesWorkspaceRepository;
   logger: AppLogger;
   metrics: BotMetrics;
 }
@@ -82,7 +84,11 @@ export class SalesBot {
     });
     conversation.lastProductIds = recommendedProducts.map((product) => product.id);
 
-    const responseText = await this.deps.copyGenerator.generate({ conversation, products: recommendedProducts });
+    const responseText = await this.deps.copyGenerator.generate({
+      conversation,
+      products: recommendedProducts,
+      workspace: await this.deps.workspace.find()
+    });
     const handoff = conversation.stage === "handoff";
 
     conversation.messages.push({
@@ -138,7 +144,8 @@ export class SalesBot {
       stage: conversation.stage,
       score: conversation.score,
       recommendedProducts,
-      handoff
+      handoff,
+      profile: conversation.profile
     };
   }
 

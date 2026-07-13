@@ -5,7 +5,8 @@ import { startTracing, stopTracing } from "./infrastructure/observability/tracin
 import {
   JsonConversationRepository,
   JsonFileStore,
-  JsonLeadRepository
+  JsonLeadRepository,
+  JsonSalesWorkspaceRepository
 } from "./infrastructure/persistence/JsonFileStore";
 
 async function main() {
@@ -26,7 +27,8 @@ async function main() {
     config,
     logger,
     conversations: new JsonConversationRepository(store),
-    leads: new JsonLeadRepository(store)
+    leads: new JsonLeadRepository(store),
+    workspace: new JsonSalesWorkspaceRepository(store)
   });
 
   const shutdown = async (signal: string) => {

@@ -7,6 +7,7 @@ import { InMemoryProductCatalog } from "../../src/infrastructure/catalog/InMemor
 import { nullLogger } from "../../src/infrastructure/logging/logger";
 import { InMemoryConversationRepository } from "../../src/infrastructure/persistence/InMemoryConversationRepository";
 import { InMemoryLeadRepository } from "../../src/infrastructure/persistence/InMemoryLeadRepository";
+import { InMemorySalesWorkspaceRepository } from "../../src/infrastructure/persistence/InMemorySalesWorkspaceRepository";
 
 const noopMetrics = {
   recordBotMessage: () => undefined
@@ -25,6 +26,7 @@ function createBot(input?: {
     catalog: new InMemoryProductCatalog(),
     events: { publish: async (event) => { events.push(event); } },
     copyGenerator: new TemplateSalesCopyGenerator(),
+    workspace: new InMemorySalesWorkspaceRepository(),
     logger: input?.logger ?? nullLogger,
     metrics: noopMetrics
   });
@@ -59,6 +61,7 @@ describe("SalesBot", () => {
     expect(reply.stage).toBe("handoff");
     expect(reply.handoff).toBe(true);
     expect(reply.recommendedProducts.length).toBeGreaterThan(0);
+    expect(reply.profile).toMatchObject({ email: "ana@example.com", budget: 5000, consentToContact: true });
 
     const conversation = await conversations.findBySessionId("s-2");
     expect(conversation?.messages).toHaveLength(2);

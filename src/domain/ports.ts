@@ -5,7 +5,8 @@ import type {
   CustomerProfile,
   DomainEvent,
   Lead,
-  Product
+  Product,
+  SalesWorkspace
 } from "./types";
 
 export interface ConversationRepository {
@@ -16,6 +17,11 @@ export interface ConversationRepository {
 export interface ProductCatalog {
   list(): Promise<Product[]>;
   search(query: string, profile: CustomerProfile): Promise<Product[]>;
+}
+
+export interface SalesWorkspaceRepository {
+  find(): Promise<SalesWorkspace | undefined>;
+  save(workspace: SalesWorkspace): Promise<void>;
 }
 
 export interface LeadRepository {
@@ -42,7 +48,7 @@ export interface CrmGateway {
 }
 
 export interface SalesCopyGenerator {
-  generate(input: { conversation: Conversation; products: Product[] }): Promise<string>;
+  generate(input: { conversation: Conversation; products: Product[]; workspace?: SalesWorkspace }): Promise<string>;
 }
 
 export interface IdempotencyStore {
@@ -69,6 +75,10 @@ export interface ModelMetrics {
     durationSeconds: number;
   }): void;
   recordModelGuardrailBlock(input: { reason: "prompt_injection" | "off_topic" | "oversized" }): void;
+}
+
+export interface AcquisitionMetrics {
+  recordWorkspaceActivation(input: { tone: string }): void;
 }
 
 export interface AppLogger {

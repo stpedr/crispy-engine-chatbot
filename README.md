@@ -19,6 +19,9 @@ flowchart LR
   Web[Web PWA] --> API[Fastify API]
   Channels[WhatsApp / Instagram] --> Gateway[Webhook Gateway]
   Gateway --> API
+  API --> Setup[Onboarding comercial]
+  Setup --> Workspace[(Sales Workspace)]
+  Workspace --> Catalog
   API --> Bot[SalesBot]
   Bot --> Catalog[Product Catalog]
   Bot --> Store[(Conversations + Leads)]
@@ -38,12 +41,15 @@ npm run dev
 
 API local:
 
-- `GET /` - interface PWA
+- `GET /` e `GET /setup` - onboarding comercial
+- `GET /chat` - atendimento configurado
 - `GET /health`
 - `GET /ready`
 - `GET /metrics`
 - `GET /ai/status`
 - `GET /products`
+- `GET /workspace`
+- `PUT /workspace`
 - `GET /leads`
 - `GET /leads/:leadId`
 - `POST /messages`
@@ -116,6 +122,7 @@ Metricas Prometheus ficam em `/metrics`, incluindo:
 - `model_requests_total`
 - `model_request_duration_seconds`
 - `model_guardrail_blocks_total`
+- `workspace_activations_total`
 - metricas padrao do Node.js via `prom-client`
 
 Tracing OTLP e opcional:
@@ -146,6 +153,19 @@ Camadas de protecao do tema comercial:
 - redirecionamento antes da inferencia e fallback por template em qualquer falha.
 
 Configuracao: `OLLAMA_ENABLED`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `OLLAMA_TEMPERATURE`, `OLLAMA_TIMEOUT_MS`, `OLLAMA_MAX_HISTORY` e `OLLAMA_KEEP_ALIVE`.
+
+## Onboarding de aquisicao
+
+A rota raiz entrega um fluxo de configuracao em quatro etapas:
+
+1. negocio, segmento, publico, proposta de valor e cor da marca;
+2. catalogo com nome, descricao, preco, palavras-chave e imagem opcional;
+3. tom de voz, saudacao, mensagem de handoff e destino comercial;
+4. revisao e ativacao.
+
+`PUT /workspace` valida e persiste a configuracao. O catalogo do bot passa a ler os produtos ativos, e o gerador Ollama recebe nome, segmento, publico, proposta de valor e tom como contexto controlado. O chat reflete marca, saudacao, imagens e produtos sem reiniciar o servidor.
+
+No GitHub Pages, o mesmo percurso usa `localStorage`, mantendo o onboarding e a demonstracao funcionais sem backend.
 
 ## PWA e GitHub Pages
 

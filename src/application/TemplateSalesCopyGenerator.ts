@@ -3,11 +3,12 @@ import type { SalesCopyGenerator } from "../domain/ports";
 
 export class TemplateSalesCopyGenerator implements SalesCopyGenerator {
   async generate(input: Parameters<SalesCopyGenerator["generate"]>[0]): Promise<string> {
-    const { conversation, products } = input;
+    const { conversation, products, workspace } = input;
     const { profile, stage } = conversation;
     const missing = missingQualificationFields(profile);
 
     if (stage === "handoff") {
+      if (workspace?.handoffMessage) return workspace.handoffMessage;
       return [
         `Perfeito${profile.name ? `, ${profile.name}` : ""}. Ja tenho o contexto principal e vou encaminhar para um consultor.`,
         "Enquanto isso, priorize a opcao com melhor aderencia ao seu volume e prazo."
@@ -19,8 +20,9 @@ export class TemplateSalesCopyGenerator implements SalesCopyGenerator {
       return [
         `Pelo que entendi, ${product.name} parece ser a melhor opcao agora.`,
         product.description,
+        workspace?.valueProposition ? workspace.valueProposition : "",
         "Quer que eu monte uma proposta inicial e confirme os proximos passos por email?"
-      ].join(" ");
+      ].filter(Boolean).join(" ");
     }
 
     if (missing.includes("pain")) {

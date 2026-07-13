@@ -109,6 +109,7 @@ export const chatPage = String.raw`<!doctype html>
     }
 
     .button:hover { border-color: #aeb9b3; background: #fafbf9; }
+    .setup-link { text-decoration: none; }
 
     .workspace {
       display: grid;
@@ -328,6 +329,14 @@ export const chatPage = String.raw`<!doctype html>
     .product-name { font-size: 13px; font-weight: 750; }
     .product-price { color: var(--teal-dark); font-size: 12px; font-weight: 750; white-space: nowrap; }
     .product p { margin: 7px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .product-image {
+      display: block;
+      width: calc(100% + 22px);
+      height: 150px;
+      margin: -11px -11px 11px;
+      border-bottom: 1px solid var(--line);
+      object-fit: cover;
+    }
 
     .product-action {
       width: 100%;
@@ -358,6 +367,7 @@ export const chatPage = String.raw`<!doctype html>
     .handoff.visible { display: block; }
 
     .mobile-nav { display: none; }
+    .mobile-label { display: none; }
 
     @media (max-width: 820px) {
       body { overflow: hidden; }
@@ -396,6 +406,10 @@ export const chatPage = String.raw`<!doctype html>
       .topbar { padding: 0 14px; }
       .brand-subtitle { display: none; }
       .button { padding: 0 10px; font-size: 12px; }
+      .topbar-actions { gap: 7px; }
+      .topbar-actions .button { width: 36px; min-height: 36px; padding: 0; }
+      .desktop-label { display: none; }
+      .mobile-label { display: inline; font-size: 19px; line-height: 1; }
       .side { padding: 18px 16px; }
       .bubble { max-width: 88%; }
     }
@@ -405,15 +419,16 @@ export const chatPage = String.raw`<!doctype html>
   <div class="app">
     <header class="topbar">
       <div class="brand">
-        <div class="brand-mark" aria-hidden="true">SB</div>
+        <div class="brand-mark" id="brand-mark" aria-hidden="true">SB</div>
         <div>
-          <div class="brand-name">Sales Bot</div>
-          <div class="brand-subtitle">Atendimento comercial</div>
+          <div class="brand-name" id="brand-name">Sales Bot</div>
+          <div class="brand-subtitle" id="brand-subtitle">Atendimento comercial</div>
         </div>
       </div>
       <div class="topbar-actions">
         <div class="service-status"><span class="status-dot"></span><span id="runtime-status">API online</span></div>
-        <button class="button" id="new-conversation" type="button">Nova conversa</button>
+        <a class="button setup-link" id="setup-link" href="./" title="Configurar bot" aria-label="Configurar bot"><span class="desktop-label">Configurar</span><span class="mobile-label" aria-hidden="true">&#9881;</span></a>
+        <button class="button" id="new-conversation" type="button" title="Nova conversa" aria-label="Nova conversa"><span class="desktop-label">Nova conversa</span><span class="mobile-label" aria-hidden="true">+</span></button>
       </div>
     </header>
 
@@ -421,8 +436,8 @@ export const chatPage = String.raw`<!doctype html>
       <section class="chat" aria-label="Conversa comercial">
         <div class="messages" id="messages" aria-live="polite">
           <div class="message bot">
-            <div class="avatar" aria-hidden="true">SB</div>
-            <div class="bubble">Ol&aacute;! Qual desafio de vendas voc&ecirc; quer resolver primeiro?</div>
+            <div class="avatar" id="initial-avatar" aria-hidden="true">SB</div>
+            <div class="bubble" id="initial-greeting">Ol&aacute;! Qual desafio de vendas voc&ecirc; quer resolver primeiro?</div>
           </div>
         </div>
 
@@ -515,7 +530,10 @@ export const chatPage = String.raw`<!doctype html>
       var handoff = document.getElementById("handoff");
       var products = document.getElementById("products");
       var catalog = document.getElementById("catalog");
-      var isStaticDemo = location.hostname.endsWith(".github.io") || location.protocol === "file:" || new URLSearchParams(location.search).has("demo");
+      var explicitDemo = new URLSearchParams(location.search).has("demo");
+      var isStaticDemo = location.hostname.endsWith(".github.io") || location.protocol === "file:" || explicitDemo;
+      var workspaceConfig = null;
+      var defaultGreeting = "Ol\u00e1! Qual desafio de vendas voc\u00ea quer resolver primeiro?";
       var demoProfiles = {};
       var demoProducts = [
         { id: "starter", name: "Sales Starter", description: "Pacote para validar atendimento comercial, capturar leads e responder duvidas frequentes.", priceCents: 99000, tags: ["leads", "atendimento", "starter"] },
@@ -523,6 +541,7 @@ export const chatPage = String.raw`<!doctype html>
         { id: "enterprise", name: "Sales Enterprise", description: "Arquitetura customizada com integracoes, governanca, observabilidade e suporte dedicado.", priceCents: 799000, tags: ["enterprise", "integracao", "escala"] }
       ];
       if (isStaticDemo) document.getElementById("runtime-status").textContent = "Demo PWA";
+      document.getElementById("setup-link").href = isStaticDemo ? "./index.html" + (explicitDemo ? "?demo=1" : "") : "./";
 
       function newSessionId() {
         if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
@@ -546,6 +565,7 @@ export const chatPage = String.raw`<!doctype html>
 
       async function requestJson(path, options) {
         if (isStaticDemo) {
+          if (path.indexOf("workspace") >= 0) return { workspace: workspaceConfig };
           if (path.indexOf("products") >= 0) return { products: demoProducts };
           return createDemoReply(JSON.parse(options.body));
         }
@@ -601,11 +621,50 @@ export const chatPage = String.raw`<!doctype html>
         else if (!profile.timeline) replyText = "Qual e o prazo ideal: agora, este mes, este trimestre ou mais pra frente?";
         else replyText = "Tenho informacoes suficientes para recomendar uma opcao. Quer que eu avance para uma proposta inicial?";
 
-        return { sessionId: data.sessionId, text: replyText, stage: leadStage, score: leadScore, recommendedProducts: recommended, handoff: leadStage === "handoff" };
+        return { sessionId: data.sessionId, text: replyText, stage: leadStage, score: leadScore, recommendedProducts: recommended, handoff: leadStage === "handoff", profile: profile };
       }
 
       function normalizeDemo(value) {
         return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+      }
+
+      function initials(value) {
+        var words = String(value || "").trim().split(/\s+/).filter(Boolean);
+        if (!words.length) return "SB";
+        return (words[0][0] + (words[1] ? words[1][0] : "")).toUpperCase();
+      }
+
+      function applyWorkspace(workspace) {
+        if (!workspace) return;
+        workspaceConfig = workspace;
+        if (workspace.products && workspace.products.length) demoProducts = workspace.products;
+        defaultGreeting = workspace.greeting || defaultGreeting;
+        var brandInitials = initials(workspace.businessName);
+        document.getElementById("brand-mark").textContent = brandInitials;
+        document.getElementById("brand-name").textContent = workspace.businessName || "Sales Bot";
+        document.getElementById("brand-subtitle").textContent = workspace.segment || "Atendimento comercial";
+        document.getElementById("initial-avatar").textContent = brandInitials;
+        document.getElementById("initial-greeting").textContent = defaultGreeting;
+        if (workspace.brandColor) {
+          document.documentElement.style.setProperty("--teal", workspace.brandColor);
+          document.documentElement.style.setProperty("--teal-dark", workspace.brandColor);
+        }
+        document.title = (workspace.businessName || "Sales Bot") + " | Atendimento";
+      }
+
+      async function loadWorkspace() {
+        try {
+          if (isStaticDemo) {
+            var local = localStorage.getItem("sales-bot-workspace");
+            workspaceConfig = local ? JSON.parse(local) : null;
+          } else {
+            var payload = await requestJson("./workspace");
+            workspaceConfig = payload.workspace;
+          }
+          applyWorkspace(workspaceConfig);
+        } catch (error) {
+          workspaceConfig = null;
+        }
       }
 
       function addMessage(role, text, temporary) {
@@ -616,7 +675,7 @@ export const chatPage = String.raw`<!doctype html>
           var avatar = document.createElement("div");
           avatar.className = "avatar";
           avatar.setAttribute("aria-hidden", "true");
-          avatar.textContent = "SB";
+          avatar.textContent = workspaceConfig ? initials(workspaceConfig.businessName) : "SB";
           row.appendChild(avatar);
         }
         var bubble = document.createElement("div");
@@ -649,6 +708,13 @@ export const chatPage = String.raw`<!doctype html>
         items.forEach(function (item) {
           var card = document.createElement("article");
           card.className = "product";
+          if (item.imageUrl) {
+            var image = document.createElement("img");
+            image.className = "product-image";
+            image.src = item.imageUrl;
+            image.alt = "";
+            card.appendChild(image);
+          }
           var head = document.createElement("div");
           head.className = "product-head";
           var name = document.createElement("span");
@@ -670,6 +736,13 @@ export const chatPage = String.raw`<!doctype html>
         items.forEach(function (item) {
           var card = document.createElement("article");
           card.className = "product";
+          if (item.imageUrl) {
+            var image = document.createElement("img");
+            image.className = "product-image";
+            image.src = item.imageUrl;
+            image.alt = "";
+            card.appendChild(image);
+          }
           var head = document.createElement("div");
           head.className = "product-head";
           var name = document.createElement("span");
@@ -722,6 +795,13 @@ export const chatPage = String.raw`<!doctype html>
         scoreFill.style.width = reply.score + "%";
         handoff.classList.toggle("visible", reply.handoff);
         renderProducts(reply.recommendedProducts || []);
+        if (reply.profile) {
+          if (reply.profile.name) document.getElementById("name").value = reply.profile.name;
+          if (reply.profile.email) document.getElementById("email").value = reply.profile.email;
+          if (reply.profile.budget) document.getElementById("budget").value = String(reply.profile.budget);
+          if (reply.profile.timeline) document.getElementById("timeline").value = reply.profile.timeline;
+          document.getElementById("consent").checked = Boolean(reply.profile.consentToContact);
+        }
       }
 
       async function sendMessage(text) {
@@ -770,7 +850,8 @@ export const chatPage = String.raw`<!doctype html>
 
       document.getElementById("new-conversation").addEventListener("click", function () {
         sessionId = newSessionId();
-        messages.innerHTML = '<div class="message bot"><div class="avatar" aria-hidden="true">SB</div><div class="bubble">Ol\u00e1! Qual desafio de vendas voc\u00ea quer resolver primeiro?</div></div>';
+        messages.replaceChildren();
+        addMessage("bot", defaultGreeting, false);
         stage.textContent = "Novo";
         score.textContent = "0";
         scoreFill.style.width = "0%";
@@ -790,7 +871,7 @@ export const chatPage = String.raw`<!doctype html>
         });
       });
 
-      loadCatalog();
+      loadWorkspace().then(loadCatalog);
       loadAiStatus();
       if ("serviceWorker" in navigator) {
         window.addEventListener("load", function () {

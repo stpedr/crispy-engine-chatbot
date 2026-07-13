@@ -26,14 +26,21 @@ const products: Product[] = [
 ];
 
 export class InMemoryProductCatalog implements ProductCatalog {
+  constructor(private readonly catalogProducts: Product[] = products) {}
+
   async list(): Promise<Product[]> {
-    return structuredClone(products);
+    return structuredClone(this.catalogProducts);
   }
 
   async search(query: string, profile: CustomerProfile): Promise<Product[]> {
+    return searchProducts(this.catalogProducts, query, profile);
+  }
+}
+
+export function searchProducts(catalogProducts: Product[], query: string, profile: CustomerProfile): Product[] {
     const terms = tokenize(`${query} ${profile.pain ?? ""}`);
 
-    return products
+    return catalogProducts
       .map((product) => ({
         product,
         score: scoreProduct(product, terms, profile)
@@ -42,7 +49,6 @@ export class InMemoryProductCatalog implements ProductCatalog {
       .sort((left, right) => right.score - left.score)
       .slice(0, 3)
       .map((entry) => entry.product);
-  }
 }
 
 export function getDefaultProducts(): Product[] {

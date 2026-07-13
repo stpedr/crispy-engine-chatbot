@@ -23,6 +23,7 @@ flowchart LR
 
   subgraph Application[Aplicacao]
     Bot[SalesBot]
+    Setup[Workspace Onboarding]
     Rules[Lead Scoring]
     Queue[EventBus Queue]
     Worker[Handoff Worker]
@@ -32,6 +33,7 @@ flowchart LR
     Conversations[(Conversation Store)]
     Leads[(Lead Store)]
     Catalog[(Product Catalog)]
+    Workspace[(Sales Workspace)]
   end
 
   subgraph Adapters[Adaptadores externos]
@@ -52,6 +54,9 @@ flowchart LR
   IG --> Gateway
   Gateway --> Dedupe
   Gateway --> API
+  API --> Setup
+  Setup --> Workspace
+  Workspace --> Catalog
   API --> Bot
   Bot --> Rules
   Bot --> Conversations
@@ -80,6 +85,15 @@ flowchart LR
 7. `HandoffWorker` consome o evento, sincroniza o CRM com chave idempotente e atualiza o lead.
 8. Falhas de CRM recebem retry exponencial; o estado final fica `completed` ou `failed`.
 
+## Fluxo de aquisicao
+
+1. O proprietario configura negocio, publico, oferta, produtos e atendimento em `/setup`.
+2. A API valida o payload completo e persiste um `SalesWorkspace` ativo.
+3. `WorkspaceProductCatalog` passa a servir e ranquear os produtos configurados.
+4. O chat carrega marca, saudacao, imagens e catalogo sem acoplamento ao formulario.
+5. O modelo recebe somente os dados comerciais persistidos e os produtos recomendados.
+6. No Pages, a mesma fronteira e simulada em `localStorage` e o chat fica em `chat.html`.
+
 ## Fronteira do modelo
 
 O modelo nao decide nenhuma transicao de negocio. Ele recebe somente o objetivo calculado pela aplicacao, estagio, score, perfil, produtos recomendados e as ultimas mensagens marcadas como dados nao confiaveis.
@@ -103,6 +117,7 @@ A saida estruturada aceita somente classificacao `sales`, texto e IDs de produto
 - `model_requests_total`: inferencias por modelo e resultado.
 - `model_request_duration_seconds`: latencia da inferencia local.
 - `model_guardrail_blocks_total`: entradas bloqueadas antes do modelo.
+- `workspace_activations_total`: ativacoes concluidas por tom de atendimento.
 - Trace `sales_bot.handle_message` com atributos comerciais sem conteudo da mensagem.
 
 ## Limites atuais
