@@ -8,6 +8,8 @@ export type MessageRole = "customer" | "bot" | "system";
 
 export type Timeline = "now" | "this_month" | "this_quarter" | "later";
 
+export type LeadHandoffStatus = "not_requested" | "queued" | "processing" | "completed" | "failed";
+
 export interface CustomerProfile {
   name?: string;
   email?: string;
@@ -45,6 +47,36 @@ export interface Conversation {
   updatedAt: string;
 }
 
+export interface Lead {
+  id: string;
+  sessionId: string;
+  channel: Channel;
+  profile: CustomerProfile;
+  stage: LeadStage;
+  score: number;
+  productIds: string[];
+  handoffStatus: LeadHandoffStatus;
+  handoffAttempts: number;
+  crmContactId?: string;
+  crmProvider?: string;
+  lastError?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LeadHandoffRequestedEvent {
+  id: string;
+  type: "lead.handoff.requested";
+  occurredAt: string;
+  correlationId?: string;
+  payload: {
+    leadId: string;
+    sessionId: string;
+  };
+}
+
+export type DomainEvent = LeadHandoffRequestedEvent;
+
 export interface BotInput {
   sessionId: string;
   text: string;
@@ -54,6 +86,7 @@ export interface BotInput {
 }
 
 export interface BotReply {
+  leadId: string;
   sessionId: string;
   text: string;
   stage: LeadStage;
@@ -61,4 +94,9 @@ export interface BotReply {
   recommendedProducts: Product[];
   handoff: boolean;
   traceId?: string;
+}
+
+export interface CrmSyncResult {
+  contactId: string;
+  provider: string;
 }

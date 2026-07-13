@@ -1,14 +1,31 @@
 import cors from "@fastify/cors";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
+import { HandoffWorker } from "../../application/HandoffWorker";
 import { SalesBot } from "../../application/SalesBot";
+import { TemplateSalesCopyGenerator } from "../../application/TemplateSalesCopyGenerator";
 import type { AppConfig } from "../../config/env";
 import { CHANNELS } from "../../domain/types";
-import type { AppLogger, ConversationRepository, ProductCatalog } from "../../domain/ports";
+import type {
+  AppLogger,
+  ConversationRepository,
+  CrmGateway,
+  EventBus,
+  IdempotencyStore,
+  LeadRepository,
+  ProductCatalog,
+  SalesCopyGenerator
+} from "../../domain/ports";
 import { InMemoryProductCatalog } from "../catalog/InMemoryCatalog";
+import { FallbackSalesCopyGenerator, HttpSalesCopyGenerator } from "../copy/HttpSalesCopyGenerator";
+import { HttpCrmGateway } from "../crm/HttpCrmGateway";
+import { InMemoryCrmGateway } from "../crm/InMemoryCrmGateway";
+import { InMemoryEventBus } from "../events/InMemoryEventBus";
+import { InMemoryIdempotencyStore } from "../idempotency/InMemoryIdempotencyStore";
 import { createLogger } from "../logging/logger";
 import { createMetrics, type AppMetrics } from "../observability/metrics";
 import { InMemoryConversationRepository } from "../persistence/InMemoryConversationRepository";
+import { InMemoryLeadRepository } from "../persistence/InMemoryLeadRepository";
 import { chatPage } from "./chatPage";
 import { pwaIcon, pwaManifest, serviceWorker } from "./pwaAssets";
 
@@ -17,7 +34,12 @@ export interface ServerDependencies {
   logger?: AppLogger;
   metrics?: AppMetrics;
   conversations?: ConversationRepository;
+  leads?: LeadRepository;
   catalog?: ProductCatalog;
+  events?: EventBus;
+  crm?: CrmGateway;
+  copyGenerator?: SalesCopyGenerator;
+  idempotency?: IdempotencyStore;
 }
 
 const customerSchema = z.object({
@@ -37,6 +59,23 @@ const messageSchema = z.object({
   customer: customerSchema.optional()
 });
 
+const webhookParamsSchema = z.object({
+  channel: z.enum(["whatsapp", "instagram"])
+});
+
+const webhookMessageSchema = z.object({
+  messageId: z.string().min(1),
+  senderId: z.string().min(1),
+  text: z.string().min(1).max(4000),
+  customer: customerSchema.optional()
+});
+
+const leadListQuerySchema = z.object({
+  stage: z.enum(["new", "qualifying", "qualified", "proposal", "handoff"]).optional(),
+  handoffStatus: z.enum(["not_requested", "queued", "processing", "completed", "failed"]).optional(),
+  limit: z.coerce.number().int().positive().max(200).default(50)
+});
+
 export async function buildServer(deps: ServerDependencies): Promise<FastifyInstance> {
   const logger =
     deps.logger ??
@@ -52,8 +91,48 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
       enabled: deps.config.metricsEnabled
     });
   const conversations = deps.conversations ?? new InMemoryConversationRepository();
+  const leads = deps.leads ?? new InMemoryLeadRepository();
   const catalog = deps.catalog ?? new InMemoryProductCatalog();
-  const bot = new SalesBot({ conversations, catalog, logger: logger.child({ component: "sales-bot" }), metrics });
+  const events = deps.events ?? new InMemoryEventBus(logger.child({ component: "event-bus" }), metrics);
+  const crm = deps.crm ?? (deps.config.crmWebhookUrl
+    ? new HttpCrmGateway({
+        url: deps.config.crmWebhookUrl,
+        token: deps.config.crmToken,
+        timeoutMs: deps.config.outboundTimeoutMs
+      })
+    : new InMemoryCrmGateway());
+  const templateCopyGenerator = new TemplateSalesCopyGenerator();
+  const copyGenerator = deps.copyGenerator ?? (deps.config.copyGeneratorUrl
+    ? new FallbackSalesCopyGenerator(
+        new HttpSalesCopyGenerator({
+          url: deps.config.copyGeneratorUrl,
+          token: deps.config.copyGeneratorToken,
+          timeoutMs: deps.config.outboundTimeoutMs
+        }),
+        templateCopyGenerator,
+        logger.child({ component: "copy-generator" })
+      )
+    : templateCopyGenerator);
+  const idempotency = deps.idempotency ?? new InMemoryIdempotencyStore();
+  const worker = new HandoffWorker({
+    events,
+    leads,
+    crm,
+    logger: logger.child({ component: "handoff-worker" }),
+    metrics,
+    maxAttempts: deps.config.handoffMaxAttempts,
+    retryDelayMs: deps.config.handoffRetryDelayMs
+  });
+  worker.start();
+  const bot = new SalesBot({
+    conversations,
+    leads,
+    catalog,
+    events,
+    copyGenerator,
+    logger: logger.child({ component: "sales-bot" }),
+    metrics
+  });
 
   const app = Fastify({
     logger: false,
@@ -62,6 +141,12 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
   const requestStart = new WeakMap<FastifyRequest, bigint>();
 
   await app.register(cors, { origin: true });
+
+  app.addHook("onClose", async () => {
+    await events.drain();
+    worker.stop();
+    await events.stop();
+  });
 
   app.addHook("onRequest", (request, _reply, done) => {
     requestStart.set(request, process.hrtime.bigint());
@@ -118,7 +203,7 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
   });
 
   app.get("/health", async () => ({ status: "ok" }));
-  app.get("/ready", async () => ({ status: "ready" }));
+  app.get("/ready", async () => ({ status: "ready", queue: "ready", worker: "ready" }));
   app.get("/", async (_request, reply) => reply.type("text/html; charset=utf-8").send(chatPage));
   app.get("/manifest.webmanifest", async (_request, reply) =>
     reply.type("application/manifest+json").send(pwaManifest)
@@ -135,6 +220,26 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
 
   app.get("/products", async () => ({ products: await catalog.list() }));
 
+  app.get("/leads", async (request, reply) => {
+    const parsed = leadListQuerySchema.safeParse(request.query);
+    if (!parsed.success) return reply.status(400).send({ error: "invalid_request", details: parsed.error.flatten() });
+
+    const allLeads = await leads.list();
+    const filtered = allLeads
+      .filter((lead) => !parsed.data.stage || lead.stage === parsed.data.stage)
+      .filter((lead) => !parsed.data.handoffStatus || lead.handoffStatus === parsed.data.handoffStatus)
+      .slice(0, parsed.data.limit);
+    return { leads: filtered, total: filtered.length };
+  });
+
+  app.get("/leads/:leadId", async (request, reply) => {
+    const params = z.object({ leadId: z.string().uuid() }).safeParse(request.params);
+    if (!params.success) return reply.status(400).send({ error: "invalid_request" });
+    const lead = await leads.findById(params.data.leadId);
+    if (!lead) return reply.status(404).send({ error: "not_found" });
+    return lead;
+  });
+
   app.post("/messages", async (request, reply) => {
     const parsed = messageSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -148,6 +253,47 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
       ...parsed.data,
       correlationId: request.id
     });
+  });
+
+  app.get("/webhooks/:channel", async (request, reply) => {
+    const params = webhookParamsSchema.safeParse(request.params);
+    const query = z.object({
+      "hub.mode": z.literal("subscribe"),
+      "hub.verify_token": z.string(),
+      "hub.challenge": z.string()
+    }).safeParse(request.query);
+    if (!params.success || !query.success || !deps.config.webhookVerifyToken) {
+      return reply.status(403).send({ error: "verification_failed" });
+    }
+    if (query.data["hub.verify_token"] !== deps.config.webhookVerifyToken) {
+      return reply.status(403).send({ error: "verification_failed" });
+    }
+    return reply.type("text/plain").send(query.data["hub.challenge"]);
+  });
+
+  app.post("/webhooks/:channel", async (request, reply) => {
+    const params = webhookParamsSchema.safeParse(request.params);
+    const message = webhookMessageSchema.safeParse(request.body);
+    if (!params.success || !message.success) {
+      return reply.status(400).send({ error: "invalid_request" });
+    }
+    if (deps.config.webhookIngressToken && request.headers["x-webhook-token"] !== deps.config.webhookIngressToken) {
+      return reply.status(401).send({ error: "unauthorized" });
+    }
+
+    const idempotencyKey = `${params.data.channel}:${message.data.messageId}`;
+    if (!await idempotency.claim(idempotencyKey)) {
+      return { status: "duplicate", messageId: message.data.messageId };
+    }
+
+    const botReply = await bot.handleMessage({
+      sessionId: `${params.data.channel}:${message.data.senderId}`,
+      channel: params.data.channel,
+      text: message.data.text,
+      customer: message.data.customer,
+      correlationId: request.id
+    });
+    return { status: "processed", messageId: message.data.messageId, reply: botReply };
   });
 
   app.get("/conversations/:sessionId", async (request, reply) => {

@@ -1,5 +1,5 @@
-import { collectDefaultMetrics, Counter, Histogram, Registry } from "prom-client";
-import type { BotMetrics } from "../../domain/ports";
+import { collectDefaultMetrics, Counter, Gauge, Histogram, Registry } from "prom-client";
+import type { BotMetrics, EventMetrics, HandoffMetrics } from "../../domain/ports";
 import type { Channel } from "../../domain/types";
 
 export interface MetricsConfig {
@@ -7,7 +7,7 @@ export interface MetricsConfig {
   enabled: boolean;
 }
 
-export interface AppMetrics extends BotMetrics {
+export interface AppMetrics extends BotMetrics, EventMetrics, HandoffMetrics {
   contentType: string;
   metrics(): Promise<string>;
   recordHttpRequest(input: {
@@ -41,6 +41,26 @@ export function createMetrics(config: MetricsConfig): AppMetrics {
     registers: [registry]
   });
 
+  const leadEvents = new Counter({
+    name: "lead_events_total",
+    help: "Total lead domain events published.",
+    labelNames: ["type"],
+    registers: [registry]
+  });
+
+  const handoffs = new Counter({
+    name: "lead_handoffs_total",
+    help: "Total lead handoff outcomes.",
+    labelNames: ["status", "provider"],
+    registers: [registry]
+  });
+
+  const eventQueueDepth = new Gauge({
+    name: "event_queue_depth",
+    help: "Current number of events waiting in the local queue.",
+    registers: [registry]
+  });
+
   return {
     contentType: registry.contentType,
     async metrics() {
@@ -55,6 +75,18 @@ export function createMetrics(config: MetricsConfig): AppMetrics {
     recordBotMessage(input: { stage: string; channel: Channel; handoff: boolean }) {
       if (!config.enabled) return;
       botMessages.labels(input.stage, input.channel, String(input.handoff)).inc();
+    },
+    recordLeadEvent(input) {
+      if (!config.enabled) return;
+      leadEvents.labels(input.type).inc();
+    },
+    recordHandoff(input) {
+      if (!config.enabled) return;
+      handoffs.labels(input.status, input.provider).inc();
+    },
+    setEventQueueDepth(depth) {
+      if (!config.enabled) return;
+      eventQueueDepth.set(depth);
     }
   };
 }

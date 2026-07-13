@@ -1,12 +1,23 @@
 import { randomUUID } from "crypto";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
-import { decideLeadStage, missingQualificationFields, scoreLead } from "../domain/leadScoring";
-import type { AppLogger, BotMetrics, ConversationRepository, ProductCatalog } from "../domain/ports";
-import type { BotInput, BotReply, Conversation, CustomerProfile, Product, Timeline } from "../domain/types";
+import { decideLeadStage, scoreLead } from "../domain/leadScoring";
+import type {
+  AppLogger,
+  BotMetrics,
+  ConversationRepository,
+  EventPublisher,
+  LeadRepository,
+  ProductCatalog,
+  SalesCopyGenerator
+} from "../domain/ports";
+import type { BotInput, BotReply, Conversation, CustomerProfile, Lead, Timeline } from "../domain/types";
 
 export interface SalesBotDependencies {
   conversations: ConversationRepository;
+  leads: LeadRepository;
   catalog: ProductCatalog;
+  events: EventPublisher;
+  copyGenerator: SalesCopyGenerator;
   logger: AppLogger;
   metrics: BotMetrics;
 }
@@ -50,6 +61,7 @@ export class SalesBot {
   private async handleMessageInternal(input: BotInput): Promise<BotReply> {
     const now = new Date().toISOString();
     const conversation = await this.loadConversation(input.sessionId, now);
+    const previousStage = conversation.stage;
     const extractedProfile = extractProfile(input.text);
 
     conversation.profile = mergeProfiles(conversation.profile, input.customer, extractedProfile);
@@ -70,7 +82,7 @@ export class SalesBot {
     });
     conversation.lastProductIds = recommendedProducts.map((product) => product.id);
 
-    const responseText = composeResponse(conversation, recommendedProducts);
+    const responseText = await this.deps.copyGenerator.generate({ conversation, products: recommendedProducts });
     const handoff = conversation.stage === "handoff";
 
     conversation.messages.push({
@@ -82,6 +94,22 @@ export class SalesBot {
     conversation.updatedAt = new Date().toISOString();
 
     await this.deps.conversations.save(conversation);
+    const lead = await this.saveLead(conversation, input.channel, now);
+
+    if (handoff && previousStage !== "handoff" && lead.handoffStatus === "queued") {
+      const event = {
+        id: randomUUID(),
+        type: "lead.handoff.requested" as const,
+        occurredAt: new Date().toISOString(),
+        correlationId: input.correlationId,
+        payload: {
+          leadId: lead.id,
+          sessionId: lead.sessionId
+        }
+      };
+      await this.deps.events.publish(event);
+    }
+
     this.deps.metrics.recordBotMessage({
       stage: conversation.stage,
       channel: input.channel,
@@ -96,12 +124,15 @@ export class SalesBot {
         stage: conversation.stage,
         score: conversation.score,
         handoff,
+        leadId: lead.id,
+        handoffStatus: lead.handoffStatus,
         recommendedProductIds: conversation.lastProductIds
       },
       "sales bot message handled"
     );
 
     return {
+      leadId: lead.id,
       sessionId: input.sessionId,
       text: responseText,
       stage: conversation.stage,
@@ -109,6 +140,34 @@ export class SalesBot {
       recommendedProducts,
       handoff
     };
+  }
+
+  private async saveLead(conversation: Conversation, channel: BotInput["channel"], now: string): Promise<Lead> {
+    const existing = await this.deps.leads.findBySessionId(conversation.sessionId);
+    const entersHandoff = conversation.stage === "handoff" && existing?.stage !== "handoff";
+    const handoffStatus = entersHandoff && existing?.handoffStatus !== "completed"
+      ? "queued"
+      : existing?.handoffStatus ?? "not_requested";
+
+    const lead: Lead = {
+      id: existing?.id ?? randomUUID(),
+      sessionId: conversation.sessionId,
+      channel,
+      profile: conversation.profile,
+      stage: conversation.stage,
+      score: conversation.score,
+      productIds: conversation.lastProductIds,
+      handoffStatus,
+      handoffAttempts: existing?.handoffAttempts ?? 0,
+      crmContactId: existing?.crmContactId,
+      crmProvider: existing?.crmProvider,
+      lastError: existing?.lastError,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: new Date().toISOString()
+    };
+
+    await this.deps.leads.save(lead);
+    return lead;
   }
 
   private async loadConversation(sessionId: string, now: string): Promise<Conversation> {
@@ -186,45 +245,6 @@ function mergeProfiles(...profiles: Array<CustomerProfile | undefined>): Custome
       ...profile
     });
   }, {});
-}
-
-function composeResponse(conversation: Conversation, products: Product[]): string {
-  const { profile, stage } = conversation;
-  const missing = missingQualificationFields(profile);
-
-  if (stage === "handoff") {
-    return [
-      `Perfeito${profile.name ? `, ${profile.name}` : ""}. Ja tenho o contexto principal e vou encaminhar para um consultor.`,
-      "Enquanto isso, posso deixar uma recomendacao objetiva: priorize a opcao com melhor aderencia ao seu volume e prazo."
-    ].join(" ");
-  }
-
-  if (stage === "proposal" && products[0]) {
-    const product = products[0];
-    return [
-      `Pelo que entendi, ${product.name} parece ser a melhor opcao agora.`,
-      `${product.description}`,
-      "Quer que eu monte uma proposta inicial e confirme os proximos passos por email?"
-    ].join(" ");
-  }
-
-  if (missing.includes("pain")) {
-    return "Me conta rapidinho: qual problema de vendas voce quer resolver primeiro?";
-  }
-
-  if (missing.includes("email")) {
-    return "Boa. Qual email posso usar para enviar a recomendacao e manter o historico da conversa?";
-  }
-
-  if (missing.includes("budget")) {
-    return "Entendi. Qual faixa de orcamento voce imaginou para resolver isso?";
-  }
-
-  if (missing.includes("timeline")) {
-    return "Qual e o prazo ideal para colocar isso funcionando: agora, este mes, este trimestre ou mais pra frente?";
-  }
-
-  return "Tenho informacoes suficientes para recomendar uma opcao. Quer que eu avance para uma proposta inicial?";
 }
 
 function removeUndefined<T extends Record<string, unknown>>(value: T): T {

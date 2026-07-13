@@ -1,4 +1,12 @@
-import type { Channel, Conversation, CustomerProfile, Product } from "./types";
+import type {
+  Channel,
+  Conversation,
+  CrmSyncResult,
+  CustomerProfile,
+  DomainEvent,
+  Lead,
+  Product
+} from "./types";
 
 export interface ConversationRepository {
   findBySessionId(sessionId: string): Promise<Conversation | undefined>;
@@ -10,8 +18,48 @@ export interface ProductCatalog {
   search(query: string, profile: CustomerProfile): Promise<Product[]>;
 }
 
+export interface LeadRepository {
+  findById(id: string): Promise<Lead | undefined>;
+  findBySessionId(sessionId: string): Promise<Lead | undefined>;
+  list(): Promise<Lead[]>;
+  save(lead: Lead): Promise<void>;
+}
+
+export type DomainEventHandler = (event: DomainEvent) => Promise<void>;
+
+export interface EventPublisher {
+  publish(event: DomainEvent): Promise<void>;
+}
+
+export interface EventBus extends EventPublisher {
+  subscribe(type: DomainEvent["type"], handler: DomainEventHandler): () => void;
+  drain(): Promise<void>;
+  stop(): Promise<void>;
+}
+
+export interface CrmGateway {
+  syncLead(lead: Lead, idempotencyKey: string): Promise<CrmSyncResult>;
+}
+
+export interface SalesCopyGenerator {
+  generate(input: { conversation: Conversation; products: Product[] }): Promise<string>;
+}
+
+export interface IdempotencyStore {
+  claim(key: string): Promise<boolean>;
+}
+
 export interface BotMetrics {
   recordBotMessage(input: { stage: string; channel: Channel; handoff: boolean }): void;
+}
+
+export interface EventMetrics {
+  recordLeadEvent(input: { type: DomainEvent["type"] }): void;
+  setEventQueueDepth(depth: number): void;
+}
+
+export interface HandoffMetrics {
+  recordHandoff(input: { status: "completed" | "failed" | "skipped"; provider: string }): void;
 }
 
 export interface AppLogger {

@@ -2,42 +2,100 @@
 
 ## Objetivo
 
-Criar um bot de vendas que qualifica leads, recomenda produtos e indica quando passar para um vendedor humano, sem prender a regra de negocio em HTTP, banco, CRM ou provedor de IA.
+Qualificar leads, recomendar produtos e encaminhar oportunidades quentes para um CRM sem acoplar a regra comercial a HTTP, persistencia, fila ou gerador de texto.
 
-## Camadas
+## Visao geral
 
-1. **Dominio**
-   - Tipos de lead, conversa, produto e estagio.
-   - Score de lead e decisao de estagio.
+```mermaid
+flowchart LR
+  subgraph Channels[Canais]
+    Web[Web PWA]
+    WA[WhatsApp]
+    IG[Instagram]
+    Ops[Operacao]
+  end
 
-2. **Aplicacao**
-   - `SalesBot` orquestra mensagem, extracao simples de perfil, busca no catalogo, resposta e persistencia.
+  subgraph Entry[Entrada]
+    API[Fastify HTTP API]
+    Gateway[Webhook Gateway]
+    Dedupe[Idempotency Store]
+  end
 
-3. **Infraestrutura**
-   - HTTP com Fastify.
-   - Logs com Pino.
-   - Metricas com Prometheus.
-   - Tracing com OpenTelemetry.
-   - Persistencia e catalogo em memoria para desenvolvimento/teste.
+  subgraph Application[Aplicacao]
+    Bot[SalesBot]
+    Rules[Lead Scoring]
+    Queue[EventBus Queue]
+    Worker[Handoff Worker]
+  end
 
-## Por que essa arquitetura
+  subgraph Data[Dados]
+    Conversations[(Conversation Store)]
+    Leads[(Lead Store)]
+    Catalog[(Product Catalog)]
+  end
 
-- Testes unitarios nao dependem de servidor, banco ou internet.
-- A API pode ser trocada por webhook de WhatsApp sem mexer no bot.
-- Um LLM pode entrar como adaptador futuro, com contrato claro e mockavel.
-- Logs e metricas observam comportamento real sem misturar telemetria nas regras.
+  subgraph Adapters[Adaptadores externos]
+    Copy[Template / HTTP Copy]
+    CRM[Local / HTTP CRM]
+  end
 
-## Politica de qualificacao inicial
+  subgraph Signals[Observabilidade]
+    Logs[Pino JSON Logs]
+    Metrics[Prometheus Metrics]
+    Traces[OpenTelemetry Traces]
+  end
 
-- `new`: sem informacao suficiente.
-- `qualifying`: existe interesse, mas faltam dados.
-- `qualified`: lead com score bom.
-- `proposal`: lead qualificado com produto recomendado.
-- `handoff`: lead quente com email e consentimento de contato.
+  Web --> API
+  Ops --> API
+  WA --> Gateway
+  IG --> Gateway
+  Gateway --> Dedupe
+  Gateway --> API
+  API --> Bot
+  Bot --> Rules
+  Bot --> Conversations
+  Bot --> Leads
+  Bot --> Catalog
+  Bot --> Copy
+  Bot -. lead.handoff.requested .-> Queue
+  Queue -. consumes .-> Worker
+  Worker --> Leads
+  Worker --> CRM
+  API --> Logs
+  Queue --> Metrics
+  Worker --> Metrics
+  Bot --> Traces
+```
 
-## Sinais observaveis
+## Fluxo de mensagem
 
-- Latencia por rota: `http_request_duration_seconds`.
-- Volume por canal/estagio: `bot_messages_total`.
-- Logs correlacionados por `requestId` e `sessionId`.
-- Trace `sales_bot.handle_message` quando OTLP estiver configurado.
+1. A API recebe uma mensagem web ou um evento normalizado de WhatsApp/Instagram.
+2. O gateway rejeita credenciais invalidas e deduplica `channel + messageId`.
+3. `SalesBot` agrega o perfil, calcula score, seleciona produtos e persiste conversa e lead.
+4. `SalesCopyGenerator` produz a resposta. O adaptador HTTP e opcional e sempre possui fallback por template.
+5. Na primeira transicao para `handoff`, o bot publica `lead.handoff.requested`.
+6. `HandoffWorker` consome o evento, sincroniza o CRM com chave idempotente e atualiza o lead.
+7. Falhas de CRM recebem retry exponencial; o estado final fica `completed` ou `failed`.
+
+## Persistencia
+
+- Producao local: `JsonFileStore` compartilhado por conversas e leads, configurado por `DATA_FILE`.
+- Testes: repositorios em memoria, sem rede ou disco.
+- Evolucao: as portas permitem Postgres/DynamoDB sem alterar `SalesBot` ou `HandoffWorker`.
+
+## Observabilidade
+
+- Logs correlacionados por `requestId`, `sessionId`, `leadId` e `eventId`.
+- `http_request_duration_seconds`: latencia HTTP por rota/status.
+- `bot_messages_total`: volume por canal, estagio e handoff.
+- `lead_events_total`: eventos publicados.
+- `event_queue_depth`: backlog da fila local.
+- `lead_handoffs_total`: resultados do worker por status/provedor.
+- Trace `sales_bot.handle_message` com atributos comerciais sem conteudo da mensagem.
+
+## Limites atuais
+
+- A fila e a deduplicacao sao locais ao processo. Para multiplas replicas, usar Redis, SQS, RabbitMQ ou Kafka.
+- O armazenamento JSON e adequado para uma unica instancia. Para concorrencia horizontal, usar banco transacional.
+- O arquivo local contem dados do lead. Em producao, usar banco com criptografia, controle de acesso e politica de retencao.
+- Os webhooks recebem um contrato normalizado; adaptadores de payload especificos da Meta devem ficar antes desse gateway.

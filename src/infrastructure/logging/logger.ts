@@ -14,7 +14,15 @@ export function createLogger(config: LoggerConfig): AppLogger {
       service: config.serviceName
     },
     redact: {
-      paths: ["email", "*.email", "profile.email", "customer.email", "body.customer.email", "headers.authorization"],
+      paths: [
+        "email",
+        "*.email",
+        "profile.email",
+        "customer.email",
+        "body.customer.email",
+        "headers.authorization",
+        "headers.x-webhook-token"
+      ],
       censor: "[REDACTED]"
     }
   };

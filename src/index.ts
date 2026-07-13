@@ -2,6 +2,11 @@ import { loadConfig } from "./config/env";
 import { buildServer } from "./infrastructure/http/server";
 import { createLogger } from "./infrastructure/logging/logger";
 import { startTracing, stopTracing } from "./infrastructure/observability/tracing";
+import {
+  JsonConversationRepository,
+  JsonFileStore,
+  JsonLeadRepository
+} from "./infrastructure/persistence/JsonFileStore";
 
 async function main() {
   const config = loadConfig();
@@ -16,7 +21,13 @@ async function main() {
     logger
   });
 
-  const app = await buildServer({ config, logger });
+  const store = new JsonFileStore(config.dataFile);
+  const app = await buildServer({
+    config,
+    logger,
+    conversations: new JsonConversationRepository(store),
+    leads: new JsonLeadRepository(store)
+  });
 
   const shutdown = async (signal: string) => {
     logger.info({ signal }, "shutdown started");

@@ -10,18 +10,23 @@ Inclui uma interface PWA responsiva: chat e cardapio lado a lado no desktop, com
 - **Ports and adapters:** catalogo, persistencia, HTTP, logs e metricas entram como portas/adaptadores.
 - **Observabilidade desde o inicio:** logs JSON com `requestId`, metricas Prometheus em `/metrics` e tracing OTLP opcional.
 - **Testabilidade:** o bot roda em memoria nos testes; API e dominio sao testados sem subir servidor real.
-- **Evolucao facil:** trocar memoria por Postgres/Redis, catalogo por CRM ou resposta deterministica por LLM nao muda o contrato central.
+- **Integracoes substituiveis:** CRM e geracao de copy usam contratos HTTP opcionais, com adaptadores locais para desenvolvimento.
+- **Processamento assincrono:** handoffs entram em uma fila e sao processados por worker idempotente com retry.
+- **Persistencia local:** a execucao Node grava conversas e leads em arquivo; testes continuam totalmente em memoria.
 
 ```mermaid
 flowchart LR
-  Client[Canal: site, WhatsApp, CRM] --> HTTP[Fastify HTTP API]
-  HTTP --> Bot[SalesBot Application]
-  Bot --> Rules[Lead Scoring + Policy]
-  Bot --> Catalog[ProductCatalog Port]
-  Bot --> Store[ConversationRepository Port]
-  HTTP --> Logs[Pino Logs]
-  HTTP --> Metrics[Prometheus Metrics]
-  Bot --> Trace[OpenTelemetry Traces]
+  Web[Web PWA] --> API[Fastify API]
+  Channels[WhatsApp / Instagram] --> Gateway[Webhook Gateway]
+  Gateway --> API
+  API --> Bot[SalesBot]
+  Bot --> Catalog[Product Catalog]
+  Bot --> Store[(Conversations + Leads)]
+  Bot --> Copy[Template / HTTP Copy Generator]
+  Bot -. handoff event .-> Queue[Event Queue]
+  Queue -. consumes .-> Worker[Handoff Worker]
+  Worker --> CRM[Local / HTTP CRM]
+  API --> Observability[Logs + Metrics + Traces]
 ```
 
 ## Como rodar
@@ -38,8 +43,12 @@ API local:
 - `GET /ready`
 - `GET /metrics`
 - `GET /products`
+- `GET /leads`
+- `GET /leads/:leadId`
 - `POST /messages`
 - `GET /conversations/:sessionId`
+- `GET /webhooks/:channel` - verificacao de webhook
+- `POST /webhooks/:channel` - entrada normalizada de WhatsApp/Instagram
 
 Exemplo:
 
@@ -50,6 +59,19 @@ curl -X POST http://localhost:3000/messages \
     "sessionId": "lead-1",
     "channel": "web",
     "text": "Sou Ana, preciso de automacao de vendas e CRM agora. Meu email e ana@example.com, tenho orcamento R$ 5000 e autorizo contato."
+  }'
+```
+
+Webhook normalizado:
+
+```bash
+curl -X POST http://localhost:3000/webhooks/whatsapp \
+  -H "content-type: application/json" \
+  -H "x-webhook-token: local-secret" \
+  -d '{
+    "messageId": "wamid-1",
+    "senderId": "5511999999999",
+    "text": "Preciso automatizar vendas agora"
   }'
 ```
 
@@ -76,6 +98,9 @@ Campos importantes:
 - `stage`
 - `score`
 - `handoff`
+- `handoffStatus`
+- `leadId`
+- `eventId`
 - `recommendedProductIds`
 
 ## Observabilidade
@@ -84,6 +109,9 @@ Metricas Prometheus ficam em `/metrics`, incluindo:
 
 - `http_request_duration_seconds`
 - `bot_messages_total`
+- `lead_events_total`
+- `lead_handoffs_total`
+- `event_queue_depth`
 - metricas padrao do Node.js via `prom-client`
 
 Tracing OTLP e opcional:
@@ -104,9 +132,12 @@ O resultado fica em `_site`. O workflow `.github/workflows/pages.yml` publica es
 
 No GitHub Pages, a interface usa um modo demonstracao local porque Pages nao executa o backend Node. Em uma hospedagem Node, ela usa a API real com persistencia, logs, metricas e tracing.
 
-## Proximos adaptadores naturais
+## Integracoes opcionais
 
-- `ConversationRepository`: Postgres, Redis ou DynamoDB.
-- `ProductCatalog`: CRM, ERP ou planilha de catalogo.
-- `CrmGateway`: HubSpot, Pipedrive ou Salesforce.
-- `SalesCopyGenerator`: LLM para resposta natural, mantendo testes deterministas no dominio.
+- `CRM_WEBHOOK_URL`: recebe `POST { lead }` e retorna `{ contactId, provider }`.
+- `COPY_GENERATOR_URL`: recebe conversa e produtos e retorna `{ text }`; falhas usam o template local.
+- `WEBHOOK_VERIFY_TOKEN`: token do handshake de WhatsApp/Instagram.
+- `WEBHOOK_INGRESS_TOKEN`: protege a entrada normalizada via `x-webhook-token`.
+- `DATA_FILE`: caminho do armazenamento JSON local.
+
+Os contratos `ConversationRepository`, `LeadRepository`, `EventBus`, `CrmGateway` e `SalesCopyGenerator` permitem trocar os adaptadores locais por Postgres, Redis/SQS e provedores comerciais sem alterar o dominio.
