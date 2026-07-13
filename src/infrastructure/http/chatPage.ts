@@ -704,6 +704,18 @@ export const chatPage = String.raw`<!doctype html>
         }
       }
 
+      async function loadAiStatus() {
+        if (isStaticDemo) return;
+        try {
+          var payload = await requestJson("./ai/status");
+          var status = document.getElementById("runtime-status");
+          status.textContent = payload.provider.indexOf("ollama:") === 0 ? "Ollama ativo" : "API online";
+          status.title = "Gerador: " + payload.provider;
+        } catch (error) {
+          document.getElementById("runtime-status").textContent = "API online";
+        }
+      }
+
       function updateQualification(reply) {
         stage.textContent = stageLabel(reply.stage);
         score.textContent = String(reply.score);
@@ -779,6 +791,7 @@ export const chatPage = String.raw`<!doctype html>
       });
 
       loadCatalog();
+      loadAiStatus();
       if ("serviceWorker" in navigator) {
         window.addEventListener("load", function () {
           navigator.serviceWorker.register("./sw.js").catch(function () { return undefined; });

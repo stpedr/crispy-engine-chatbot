@@ -22,7 +22,7 @@ flowchart LR
   API --> Bot[SalesBot]
   Bot --> Catalog[Product Catalog]
   Bot --> Store[(Conversations + Leads)]
-  Bot --> Copy[Template / HTTP Copy Generator]
+  Bot --> Copy[Ollama / Template / HTTP Copy]
   Bot -. handoff event .-> Queue[Event Queue]
   Queue -. consumes .-> Worker[Handoff Worker]
   Worker --> CRM[Local / HTTP CRM]
@@ -42,6 +42,7 @@ API local:
 - `GET /health`
 - `GET /ready`
 - `GET /metrics`
+- `GET /ai/status`
 - `GET /products`
 - `GET /leads`
 - `GET /leads/:leadId`
@@ -112,6 +113,9 @@ Metricas Prometheus ficam em `/metrics`, incluindo:
 - `lead_events_total`
 - `lead_handoffs_total`
 - `event_queue_depth`
+- `model_requests_total`
+- `model_request_duration_seconds`
+- `model_guardrail_blocks_total`
 - metricas padrao do Node.js via `prom-client`
 
 Tracing OTLP e opcional:
@@ -119,6 +123,29 @@ Tracing OTLP e opcional:
 ```bash
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces npm run dev
 ```
+
+## Modelo local com Ollama
+
+Fora do ambiente de teste, o servidor usa `llama3:latest` em `http://127.0.0.1:11434` por padrao. Prepare o modelo antes de iniciar:
+
+```bash
+ollama pull llama3
+ollama serve
+npm run dev
+```
+
+O modelo apenas escreve a resposta. Score, estagio, produtos, consentimento, eventos e handoff continuam deterministas.
+
+Camadas de protecao do tema comercial:
+
+- filtro local antes do modelo para prompt injection, mensagens grandes e assuntos claramente externos;
+- prompt de sistema restrito ao catalogo e ao objetivo comercial calculado pela aplicacao;
+- historico enviado como dados nao confiaveis, nunca como instrucoes;
+- JSON Schema obrigatorio com `topic: sales`, `text` e IDs de produtos;
+- validacao local contra produtos desconhecidos, precos inventados, links e vazamento de prompt;
+- redirecionamento antes da inferencia e fallback por template em qualquer falha.
+
+Configuracao: `OLLAMA_ENABLED`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `OLLAMA_TEMPERATURE`, `OLLAMA_TIMEOUT_MS`, `OLLAMA_MAX_HISTORY` e `OLLAMA_KEEP_ALIVE`.
 
 ## PWA e GitHub Pages
 
@@ -135,7 +162,7 @@ No GitHub Pages, a interface usa um modo demonstracao local porque Pages nao exe
 ## Integracoes opcionais
 
 - `CRM_WEBHOOK_URL`: recebe `POST { lead }` e retorna `{ contactId, provider }`.
-- `COPY_GENERATOR_URL`: recebe conversa e produtos e retorna `{ text }`; falhas usam o template local.
+- `COPY_GENERATOR_URL`: gerador HTTP alternativo usado quando o Ollama esta desativado; falhas usam o template local.
 - `WEBHOOK_VERIFY_TOKEN`: token do handshake de WhatsApp/Instagram.
 - `WEBHOOK_INGRESS_TOKEN`: protege a entrada normalizada via `x-webhook-token`.
 - `DATA_FILE`: caminho do armazenamento JSON local.

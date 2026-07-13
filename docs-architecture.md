@@ -35,7 +35,8 @@ flowchart LR
   end
 
   subgraph Adapters[Adaptadores externos]
-    Copy[Template / HTTP Copy]
+    InputGuard[Sales Topic Guard]
+    Copy[Ollama / Template / HTTP Copy]
     CRM[Local / HTTP CRM]
   end
 
@@ -56,7 +57,8 @@ flowchart LR
   Bot --> Conversations
   Bot --> Leads
   Bot --> Catalog
-  Bot --> Copy
+  Bot --> InputGuard
+  InputGuard --> Copy
   Bot -. lead.handoff.requested .-> Queue
   Queue -. consumes .-> Worker
   Worker --> Leads
@@ -72,10 +74,17 @@ flowchart LR
 1. A API recebe uma mensagem web ou um evento normalizado de WhatsApp/Instagram.
 2. O gateway rejeita credenciais invalidas e deduplica `channel + messageId`.
 3. `SalesBot` agrega o perfil, calcula score, seleciona produtos e persiste conversa e lead.
-4. `SalesCopyGenerator` produz a resposta. O adaptador HTTP e opcional e sempre possui fallback por template.
-5. Na primeira transicao para `handoff`, o bot publica `lead.handoff.requested`.
-6. `HandoffWorker` consome o evento, sincroniza o CRM com chave idempotente e atualiza o lead.
-7. Falhas de CRM recebem retry exponencial; o estado final fica `completed` ou `failed`.
+4. `SalesTopicGuardGenerator` bloqueia prompt injection e entradas claramente externas antes da inferencia.
+5. `OllamaSalesCopyGenerator` usa o modelo local com prompt restritivo e JSON Schema; saidas invalidas voltam ao template.
+6. Na primeira transicao para `handoff`, o bot publica `lead.handoff.requested`.
+7. `HandoffWorker` consome o evento, sincroniza o CRM com chave idempotente e atualiza o lead.
+8. Falhas de CRM recebem retry exponencial; o estado final fica `completed` ou `failed`.
+
+## Fronteira do modelo
+
+O modelo nao decide nenhuma transicao de negocio. Ele recebe somente o objetivo calculado pela aplicacao, estagio, score, perfil, produtos recomendados e as ultimas mensagens marcadas como dados nao confiaveis.
+
+A saida estruturada aceita somente classificacao `sales`, texto e IDs de produtos. Entradas externas sao desviadas antes da inferencia; qualquer outra classificacao, falha HTTP, timeout, JSON invalido, produto desconhecido, preco inventado ou vazamento de prompt aciona o template local.
 
 ## Persistencia
 
@@ -91,6 +100,9 @@ flowchart LR
 - `lead_events_total`: eventos publicados.
 - `event_queue_depth`: backlog da fila local.
 - `lead_handoffs_total`: resultados do worker por status/provedor.
+- `model_requests_total`: inferencias por modelo e resultado.
+- `model_request_duration_seconds`: latencia da inferencia local.
+- `model_guardrail_blocks_total`: entradas bloqueadas antes do modelo.
 - Trace `sales_bot.handle_message` com atributos comerciais sem conteudo da mensagem.
 
 ## Limites atuais

@@ -1,5 +1,5 @@
 import { collectDefaultMetrics, Counter, Gauge, Histogram, Registry } from "prom-client";
-import type { BotMetrics, EventMetrics, HandoffMetrics } from "../../domain/ports";
+import type { BotMetrics, EventMetrics, HandoffMetrics, ModelMetrics } from "../../domain/ports";
 import type { Channel } from "../../domain/types";
 
 export interface MetricsConfig {
@@ -7,7 +7,7 @@ export interface MetricsConfig {
   enabled: boolean;
 }
 
-export interface AppMetrics extends BotMetrics, EventMetrics, HandoffMetrics {
+export interface AppMetrics extends BotMetrics, EventMetrics, HandoffMetrics, ModelMetrics {
   contentType: string;
   metrics(): Promise<string>;
   recordHttpRequest(input: {
@@ -61,6 +61,28 @@ export function createMetrics(config: MetricsConfig): AppMetrics {
     registers: [registry]
   });
 
+  const modelRequests = new Counter({
+    name: "model_requests_total",
+    help: "Total local model generation requests.",
+    labelNames: ["model", "status"],
+    registers: [registry]
+  });
+
+  const modelDuration = new Histogram({
+    name: "model_request_duration_seconds",
+    help: "Duration of local model generation requests in seconds.",
+    labelNames: ["model", "status"],
+    buckets: [0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 40, 90],
+    registers: [registry]
+  });
+
+  const modelGuardrailBlocks = new Counter({
+    name: "model_guardrail_blocks_total",
+    help: "Total inputs blocked before local model generation.",
+    labelNames: ["reason"],
+    registers: [registry]
+  });
+
   return {
     contentType: registry.contentType,
     async metrics() {
@@ -87,6 +109,15 @@ export function createMetrics(config: MetricsConfig): AppMetrics {
     setEventQueueDepth(depth) {
       if (!config.enabled) return;
       eventQueueDepth.set(depth);
+    },
+    recordModelRequest(input) {
+      if (!config.enabled) return;
+      modelRequests.labels(input.model, input.status).inc();
+      modelDuration.labels(input.model, input.status).observe(input.durationSeconds);
+    },
+    recordModelGuardrailBlock(input) {
+      if (!config.enabled) return;
+      modelGuardrailBlocks.labels(input.reason).inc();
     }
   };
 }

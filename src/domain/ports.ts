@@ -62,6 +62,15 @@ export interface HandoffMetrics {
   recordHandoff(input: { status: "completed" | "failed" | "skipped"; provider: string }): void;
 }
 
+export interface ModelMetrics {
+  recordModelRequest(input: {
+    model: string;
+    status: "success" | "invalid" | "error";
+    durationSeconds: number;
+  }): void;
+  recordModelGuardrailBlock(input: { reason: "prompt_injection" | "off_topic" | "oversized" }): void;
+}
+
 export interface AppLogger {
   info(data: Record<string, unknown>, message?: string): void;
   warn(data: Record<string, unknown>, message?: string): void;

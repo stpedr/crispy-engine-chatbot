@@ -18,6 +18,8 @@ import type {
 } from "../../domain/ports";
 import { InMemoryProductCatalog } from "../catalog/InMemoryCatalog";
 import { FallbackSalesCopyGenerator, HttpSalesCopyGenerator } from "../copy/HttpSalesCopyGenerator";
+import { OllamaSalesCopyGenerator } from "../copy/OllamaSalesCopyGenerator";
+import { SalesTopicGuardGenerator } from "../copy/SalesTopicGuardGenerator";
 import { HttpCrmGateway } from "../crm/HttpCrmGateway";
 import { InMemoryCrmGateway } from "../crm/InMemoryCrmGateway";
 import { InMemoryEventBus } from "../events/InMemoryEventBus";
@@ -102,8 +104,36 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
       })
     : new InMemoryCrmGateway());
   const templateCopyGenerator = new TemplateSalesCopyGenerator();
-  const copyGenerator = deps.copyGenerator ?? (deps.config.copyGeneratorUrl
-    ? new FallbackSalesCopyGenerator(
+  let copyGenerator: SalesCopyGenerator;
+  let copyGeneratorMode: string;
+  if (deps.copyGenerator) {
+    copyGenerator = deps.copyGenerator;
+    copyGeneratorMode = "custom";
+  } else if (deps.config.ollamaEnabled) {
+    copyGenerator = new FallbackSalesCopyGenerator(
+      new SalesTopicGuardGenerator(
+        new OllamaSalesCopyGenerator(
+          {
+            baseUrl: deps.config.ollamaBaseUrl,
+            model: deps.config.ollamaModel,
+            temperature: deps.config.ollamaTemperature,
+            timeoutMs: deps.config.ollamaTimeoutMs,
+            maxHistory: deps.config.ollamaMaxHistory,
+            keepAlive: deps.config.ollamaKeepAlive
+          },
+          logger.child({ component: "ollama-copy-generator" }),
+          metrics
+        ),
+        templateCopyGenerator,
+        logger.child({ component: "sales-topic-guard" }),
+        metrics
+      ),
+      templateCopyGenerator,
+      logger.child({ component: "copy-generator" })
+    );
+    copyGeneratorMode = `ollama:${deps.config.ollamaModel}`;
+  } else if (deps.config.copyGeneratorUrl) {
+    copyGenerator = new FallbackSalesCopyGenerator(
         new HttpSalesCopyGenerator({
           url: deps.config.copyGeneratorUrl,
           token: deps.config.copyGeneratorToken,
@@ -111,8 +141,12 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
         }),
         templateCopyGenerator,
         logger.child({ component: "copy-generator" })
-      )
-    : templateCopyGenerator);
+      );
+    copyGeneratorMode = "http";
+  } else {
+    copyGenerator = templateCopyGenerator;
+    copyGeneratorMode = "template";
+  }
   const idempotency = deps.idempotency ?? new InMemoryIdempotencyStore();
   const worker = new HandoffWorker({
     events,
@@ -203,7 +237,17 @@ export async function buildServer(deps: ServerDependencies): Promise<FastifyInst
   });
 
   app.get("/health", async () => ({ status: "ok" }));
-  app.get("/ready", async () => ({ status: "ready", queue: "ready", worker: "ready" }));
+  app.get("/ready", async () => ({
+    status: "ready",
+    queue: "ready",
+    worker: "ready",
+    copyGenerator: copyGeneratorMode
+  }));
+  app.get("/ai/status", async () => ({
+    provider: copyGeneratorMode,
+    fallback: "template",
+    guardrails: ["system_prompt", "structured_output", "local_validation", "deterministic_business_rules"]
+  }));
   app.get("/", async (_request, reply) => reply.type("text/html; charset=utf-8").send(chatPage));
   app.get("/manifest.webmanifest", async (_request, reply) =>
     reply.type("application/manifest+json").send(pwaManifest)
